@@ -2828,7 +2828,10 @@ fn test_fetch_empty_repo() {
     let git_settings = GitSettings::default();
 
     let mut tx = test_data.repo.start_transaction();
-    let stats = git_fetch(
+    let GitFetchStats {
+        default_branch,
+        import_stats,
+    } = git_fetch(
         tx.repo_mut(),
         "origin".as_ref(),
         &[StringPattern::everything()],
@@ -2837,8 +2840,8 @@ fn test_fetch_empty_repo() {
     )
     .unwrap();
     // No default bookmark and no refs
-    assert_eq!(stats.default_branch, None);
-    assert!(stats.import_stats.abandoned_commits.is_empty());
+    assert_eq!(default_branch, None);
+    assert!(import_stats.abandoned_commits.is_empty());
     assert_eq!(*tx.repo().view().git_refs(), btreemap! {});
     assert_eq!(tx.repo().view().bookmarks().count(), 0);
 }
@@ -2853,7 +2856,10 @@ fn test_fetch_initial_commit_head_is_not_set() {
     let initial_git_commit = empty_git_commit(&test_data.origin_repo, "refs/heads/main", &[]);
 
     let mut tx = test_data.repo.start_transaction();
-    let stats = git_fetch(
+    let GitFetchStats {
+        default_branch,
+        import_stats,
+    } = git_fetch(
         tx.repo_mut(),
         "origin".as_ref(),
         &[StringPattern::everything()],
@@ -2862,8 +2868,8 @@ fn test_fetch_initial_commit_head_is_not_set() {
     )
     .unwrap();
     // No default bookmark because the origin repo's HEAD wasn't set
-    assert_eq!(stats.default_branch, None);
-    assert!(stats.import_stats.abandoned_commits.is_empty());
+    assert_eq!(default_branch, None);
+    assert!(import_stats.abandoned_commits.is_empty());
     let repo = tx.commit("test").unwrap();
     // The initial commit is visible after git_fetch().
     let view = repo.view();
@@ -2917,7 +2923,10 @@ fn test_fetch_initial_commit_head_is_set() {
         .unwrap();
 
     let mut tx = test_data.repo.start_transaction();
-    let stats = git_fetch(
+    let GitFetchStats {
+        default_branch,
+        import_stats,
+    } = git_fetch(
         tx.repo_mut(),
         "origin".as_ref(),
         &[StringPattern::everything()],
@@ -2926,8 +2935,8 @@ fn test_fetch_initial_commit_head_is_set() {
     )
     .unwrap();
 
-    assert_eq!(stats.default_branch, Some("main".into()));
-    assert!(stats.import_stats.abandoned_commits.is_empty());
+    assert_eq!(default_branch, Some("main".into()));
+    assert!(import_stats.abandoned_commits.is_empty());
 }
 
 #[test]
@@ -2940,7 +2949,10 @@ fn test_fetch_success() {
     let initial_git_commit = empty_git_commit(&test_data.origin_repo, "refs/heads/main", &[]);
 
     let mut tx = test_data.repo.start_transaction();
-    git_fetch(
+    let GitFetchStats {
+        default_branch: _,
+        import_stats: _,
+    } = git_fetch(
         tx.repo_mut(),
         "origin".as_ref(),
         &[StringPattern::everything()],
@@ -2967,7 +2979,10 @@ fn test_fetch_success() {
         .unwrap();
 
     let mut tx = test_data.repo.start_transaction();
-    let stats = git_fetch(
+    let GitFetchStats {
+        default_branch,
+        import_stats,
+    } = git_fetch(
         tx.repo_mut(),
         "origin".as_ref(),
         &[StringPattern::everything()],
@@ -2976,8 +2991,8 @@ fn test_fetch_success() {
     )
     .unwrap();
     // The default bookmark is "main"
-    assert_eq!(stats.default_branch, Some("main".into()));
-    assert!(stats.import_stats.abandoned_commits.is_empty());
+    assert_eq!(default_branch, Some("main".into()));
+    assert!(import_stats.abandoned_commits.is_empty());
     let repo = tx.commit("test").unwrap();
     // The new commit is visible after we fetch again
     let view = repo.view();
@@ -3023,7 +3038,10 @@ fn test_fetch_prune_deleted_ref() {
     let commit = empty_git_commit(&test_data.origin_repo, "refs/heads/main", &[]);
 
     let mut tx = test_data.repo.start_transaction();
-    git_fetch(
+    let GitFetchStats {
+        default_branch: _,
+        import_stats: _,
+    } = git_fetch(
         tx.repo_mut(),
         "origin".as_ref(),
         &[StringPattern::everything()],
@@ -3046,7 +3064,10 @@ fn test_fetch_prune_deleted_ref() {
         .delete()
         .unwrap();
     // After re-fetching, the bookmark should be deleted
-    let stats = git_fetch(
+    let GitFetchStats {
+        default_branch: _,
+        import_stats,
+    } = git_fetch(
         tx.repo_mut(),
         "origin".as_ref(),
         &[StringPattern::everything()],
@@ -3054,7 +3075,7 @@ fn test_fetch_prune_deleted_ref() {
         None,
     )
     .unwrap();
-    assert_eq!(stats.import_stats.abandoned_commits, vec![jj_id(commit)]);
+    assert_eq!(import_stats.abandoned_commits, vec![jj_id(commit)]);
     assert!(tx.repo().get_local_bookmark("main".as_ref()).is_absent());
     assert!(
         tx.repo_mut()
@@ -3073,7 +3094,10 @@ fn test_fetch_no_default_branch() {
     let initial_git_commit = empty_git_commit(&test_data.origin_repo, "refs/heads/main", &[]);
 
     let mut tx = test_data.repo.start_transaction();
-    git_fetch(
+    let GitFetchStats {
+        default_branch: _,
+        import_stats: _,
+    } = git_fetch(
         tx.repo_mut(),
         "origin".as_ref(),
         &[StringPattern::everything()],
@@ -3092,7 +3116,10 @@ fn test_fetch_no_default_branch() {
     // we point it to initial_git_commit.
     testutils::git::set_head_to_id(&test_data.origin_repo, initial_git_commit);
 
-    let stats = git_fetch(
+    let GitFetchStats {
+        default_branch,
+        import_stats: _,
+    } = git_fetch(
         tx.repo_mut(),
         "origin".as_ref(),
         &[StringPattern::everything()],
@@ -3101,7 +3128,7 @@ fn test_fetch_no_default_branch() {
     )
     .unwrap();
     // There is no default bookmark
-    assert_eq!(stats.default_branch, None);
+    assert_eq!(default_branch, None);
 }
 
 #[test]
@@ -3112,7 +3139,10 @@ fn test_fetch_empty_refspecs() {
 
     // Base refspecs shouldn't be respected
     let mut tx = test_data.repo.start_transaction();
-    git_fetch(tx.repo_mut(), "origin".as_ref(), &[], &git_settings, None).unwrap();
+    let GitFetchStats {
+        default_branch: _,
+        import_stats: _,
+    } = git_fetch(tx.repo_mut(), "origin".as_ref(), &[], &git_settings, None).unwrap();
     assert!(
         tx.repo_mut()
             .get_remote_bookmark(remote_symbol("main", "origin"))
@@ -3152,7 +3182,10 @@ fn test_fetch_multiple_branches() {
     };
 
     let mut tx = test_data.repo.start_transaction();
-    let fetch_stats = git_fetch(
+    let GitFetchStats {
+        default_branch: _,
+        import_stats,
+    } = git_fetch(
         tx.repo_mut(),
         "origin".as_ref(),
         &[
@@ -3166,8 +3199,7 @@ fn test_fetch_multiple_branches() {
     .unwrap();
 
     assert_eq!(
-        fetch_stats
-            .import_stats
+        import_stats
             .changed_remote_bookmarks
             .iter()
             .map(|(symbol, _)| symbol)
