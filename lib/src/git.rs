@@ -29,6 +29,8 @@ use std::sync::Arc;
 use bstr::BStr;
 use bstr::BString;
 use futures::StreamExt as _;
+use gix::Remote;
+use gix::refspec::Instruction;
 use itertools::Itertools as _;
 use pollster::FutureExt as _;
 use thiserror::Error;
@@ -2102,6 +2104,8 @@ pub enum GitFetchError {
     RemoteName(#[from] GitRemoteNameError),
     #[error(transparent)]
     Subprocess(#[from] GitSubprocessError),
+    #[error("Invalid configuration for remote '{}': {}", .0.as_symbol(), .1)]
+    InvalidRemoteConfiguration(RemoteNameBuf, Box<gix::remote::find::Error>),
 }
 
 struct FetchedBranches {
@@ -2146,6 +2150,127 @@ fn expand_fetch_refspecs(
     })
 }
 
+fn expand_fetch_refspecs_from_remote_definitions(
+    remote_name: &RemoteName,
+    remote: &Remote,
+) -> ExpandedRefSpecs {
+    let remote_name = remote_name.as_str();
+    let remote_refspecs = remote.refspecs(gix::remote::Direction::Fetch);
+
+    let mut ignored_refspecs = Vec::with_capacity(remote_refspecs.len());
+    let mut expected_branch_names = Vec::with_capacity(remote_refspecs.len());
+
+    let refspecs = remote_refspecs
+        .iter()
+        .filter_map(|refspec| {
+            let forced = refspec.allow_non_fast_forward();
+            let refspec = refspec.to_ref();
+
+            let mut ensure_utf8 = |s| match str::from_utf8(s) {
+                Ok(s) => Some(s),
+                Err(_) => {
+                    ignored_refspecs.push(IgnoredRefspec {
+                        refspec: refspec.to_owned(),
+                        reason: "invalid UTF-8",
+                    });
+                    None
+                }
+            };
+
+            let (src, maybe_dst) = match refspec.instruction() {
+                // Already filtered out above
+                Instruction::Push(_) => return None,
+                Instruction::Fetch(fetch) => match fetch {
+                    gix::refspec::instruction::Fetch::Only { src } => (ensure_utf8(src)?, None),
+
+                    // TODO: these need to be included, but we currently have no way to express
+                    // negative refspecs
+                    gix::refspec::instruction::Fetch::Exclude { src: _ } => return None,
+
+                    gix::refspec::instruction::Fetch::AndUpdate {
+                        src,
+                        dst,
+                        allow_non_fast_forward: _, // Already captured above
+                    } => (ensure_utf8(src)?, Some(ensure_utf8(dst)?)),
+                },
+            };
+
+            if !forced {
+                ignored_refspecs.push(IgnoredRefspec {
+                    refspec: refspec.to_owned(),
+                    reason: "non-forced refspecs are not supported",
+                });
+                return None;
+            }
+
+            let Some(src_branch) = src.strip_prefix("refs/heads/") else {
+                ignored_refspecs.push(IgnoredRefspec {
+                    refspec: refspec.to_owned(),
+                    reason: "only refs/heads/ is supported for refspec sources",
+                });
+                return None;
+            };
+
+            let dst = match maybe_dst {
+                None => format!("refs/remotes/{remote_name}/{src_branch}"),
+                Some(dst) => {
+                    let Some(dst_without_prefix) = dst.strip_prefix("refs/remotes/") else {
+                        ignored_refspecs.push(IgnoredRefspec {
+                            refspec: refspec.to_owned(),
+                            reason: "only refs/remotes/ is supported for fetch destinations",
+                        });
+                        return None;
+                    };
+
+                    let Some(dst_branch) = dst_without_prefix
+                        .strip_prefix(remote_name)
+                        .and_then(|d| d.strip_prefix("/"))
+                    else {
+                        ignored_refspecs.push(IgnoredRefspec {
+                            refspec: refspec.to_owned(),
+                            reason: "remote renaming not supported",
+                        });
+                        return None;
+                    };
+
+                    if src_branch == dst_branch {
+                        dst.to_owned()
+                    } else {
+                        ignored_refspecs.push(IgnoredRefspec {
+                            refspec: refspec.to_owned(),
+                            reason: "renaming is not supported",
+                        });
+                        return None;
+                    }
+                }
+            };
+
+            // At this point src_branch and dst_branch match, so we only need to check one
+            let branch = match src_branch.match_indices('*').count() {
+                0 => Some(StringPattern::exact(src_branch)),
+                1 => StringPattern::glob(src_branch).ok(),
+                _ => None,
+            };
+            let Some(branch) = branch else {
+                ignored_refspecs.push(IgnoredRefspec {
+                    refspec: refspec.to_owned(),
+                    reason: "invalid pattern",
+                });
+                return None;
+            };
+            expected_branch_names.push(branch);
+
+            Some(RefSpec::forced(src, dst))
+        })
+        .collect();
+
+    ExpandedRefSpecs {
+        ignored_refspecs: IgnoredRefspecs(ignored_refspecs),
+        expected_branch_names,
+        refspecs,
+    }
+}
+
 /// A list of refspecs that were ignored during a fetch. Callers should
 /// consider displaying these in the UI as appropriate.
 #[derive(Debug)]
@@ -2168,7 +2293,12 @@ impl ops::DerefMut for IgnoredRefspecs {
 
 /// A refspec that was ignored during a fetch.
 #[derive(Debug)]
-pub struct IgnoredRefspec {}
+pub struct IgnoredRefspec {
+    /// The ignored refspec
+    pub refspec: gix::refspec::RefSpec,
+    /// The reason why it was ignored
+    pub reason: &'static str,
+}
 
 /// Helper struct to execute multiple `git fetch` operations
 pub struct GitFetch<'a> {
@@ -2213,17 +2343,22 @@ impl<'a> GitFetch<'a> {
     ) -> Result<IgnoredRefspecs, GitFetchError> {
         validate_remote_name(remote_name)?;
 
-        // check the remote exists
-        if self
+        // check the remote exists, but lazily read its configuration
+        let remote_result = self
             .git_repo
             .try_find_remote(remote_name.as_str())
-            .is_none()
-        {
-            return Err(GitFetchError::NoSuchRemote(remote_name.to_owned()));
-        }
+            .ok_or_else(|| GitFetchError::NoSuchRemote(remote_name.to_owned()))?
+            .map_err(|e| {
+                GitFetchError::InvalidRemoteConfiguration(remote_name.to_owned(), Box::new(e))
+            });
+
         // At this point, we are only updating Git's remote tracking branches, not the
         // local branches.
-        let expanded_refspecs = expand_fetch_refspecs(remote_name, branch_names)?;
+        let expanded_refspecs = if branch_names.is_empty() {
+            expand_fetch_refspecs_from_remote_definitions(remote_name, &remote_result?)
+        } else {
+            expand_fetch_refspecs(remote_name, branch_names)?
+        };
 
         self.fetch_inner(
             remote_name,
@@ -2247,7 +2382,7 @@ impl<'a> GitFetch<'a> {
         fetch_tags_override: Option<FetchTagsOverride>,
     ) -> Result<IgnoredRefspecs, GitFetchError> {
         if remaining_refspecs.is_empty() {
-            // Don't fall back to the base refspecs.
+            // Nothing to do here
             return Ok(ignored_refspecs);
         }
 

@@ -48,6 +48,7 @@ use jj_lib::git::GitPushStats;
 use jj_lib::git::GitRefKind;
 use jj_lib::git::GitRefUpdate;
 use jj_lib::git::GitResetHeadError;
+use jj_lib::git::IgnoredRefspec;
 use jj_lib::git_backend::GitBackend;
 use jj_lib::hex_util;
 use jj_lib::object_id::ObjectId as _;
@@ -3151,29 +3152,122 @@ fn test_fetch_no_default_branch() {
 
 #[test]
 fn test_fetch_empty_refspecs() {
-    let test_data = GitRepoData::create();
-    let git_settings = GitSettings::default();
-    empty_git_commit(&test_data.origin_repo, "refs/heads/main", &[]);
+    let git_settings = GitSettings {
+        auto_local_bookmark: true,
+        ..Default::default()
+    };
+    let mut test_repo = TestRepo::init_with_backend(TestRepoBackend::Git);
 
-    // Base refspecs shouldn't be respected
-    let mut tx = test_data.repo.start_transaction();
+    let source_repo = testutils::git::init_bare(test_repo.env.root().join("source"));
+    let included_branches = ["main", "foo", "foobar", "src-only"];
+
+    let excluded = [
+        "refs/heads/excluded",
+        "refs/heads/non-forced",
+        "refs/heads/renamed",
+        "refs/heads/wrong-remote",
+        "refs/heads/wrong-dst",
+    ];
+
+    let expected_git_refs = included_branches
+        .iter()
+        .copied()
+        .map(|branch| {
+            (
+                format!("refs/remotes/origin/{branch}").into(),
+                RefTarget::normal(jj_id(empty_git_commit(
+                    &source_repo,
+                    &format!("refs/heads/{branch}"),
+                    &[],
+                ))),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    for ref_name in excluded {
+        empty_git_commit(&source_repo, ref_name, &[]);
+    }
+
+    {
+        let git_repo = get_git_repo(&test_repo.repo);
+        let config = git_repo.config_snapshot().clone();
+
+        let url = <[u8] as gix::bstr::ByteSlice>::from_path(source_repo.path())
+            .map(gix::bstr::BStr::new)
+            .map(gix::path::to_unix_separators_on_windows);
+
+        // NB: gix doesn't seem to round-trip some of these refspecs even though
+        // they parse fine, so we'll update the config file here directly
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(
+                config
+                    .meta()
+                    .path
+                    .as_ref()
+                    .expect("failed to find config file"),
+            )
+            .expect("failed to open config file")
+            .write_all(
+                &format!(
+                    r#"
+                    [remote "origin"]
+                    url = {}
+                    # Valid
+                    fetch = +refs/heads/main:refs/remotes/origin/main
+                    fetch = +refs/heads/foo*:refs/remotes/origin/foo*
+                    fetch = +refs/heads/src-only
+                    # Invalid
+                    fetch = refs/heads/src-only
+                    fetch = refs/heads/non-forced
+                    fetch = refs/heads/non-forced:refs/remotes/origin/non-forced
+                    fetch = +refs/heads/wrong-dst:refs/remotes/tags/wrong-dst
+                    fetch = +refs/heads/wrong-remote:refs/remotes/origin2/wrong-remote
+                    fetch = +refs/tags/wrong-src:refs/remotes/origin/wrong-src
+                "#,
+                    url.as_ref()
+                        .map(|b| String::from_utf8_lossy(b))
+                        .expect("unable to normalize source url")
+                )
+                .into_bytes(),
+            )
+            .expect("failed to update config file");
+    }
+
+    // Reload after Git configuration change.
+    test_repo.repo = test_repo
+        .env
+        .load_repo_at_head(&testutils::user_settings(), test_repo.repo_path());
+
+    let mut tx = test_repo.repo.start_transaction();
     let GitFetchStats {
         default_branch: _,
         import_stats: _,
-        ignored_refspecs: _,
+        ignored_refspecs,
     } = git_fetch(tx.repo_mut(), "origin".as_ref(), &[], &git_settings, None).unwrap();
-    assert!(
-        tx.repo_mut()
-            .get_remote_bookmark(remote_symbol("main", "origin"))
-            .is_absent()
-    );
-    // No remote refs should have been fetched
-    git::import_refs(tx.repo_mut(), &git_settings).unwrap();
-    assert!(
-        tx.repo_mut()
-            .get_remote_bookmark(remote_symbol("main", "origin"))
-            .is_absent()
-    );
+
+    let mut warnings = Vec::new();
+    for IgnoredRefspec { refspec, reason } in ignored_refspecs.0 {
+        warnings.extend(reason.as_bytes().iter().chain(b": "));
+        refspec
+            .to_ref()
+            .instruction()
+            .write_to(&mut warnings)
+            .unwrap();
+        warnings.push(b'\n');
+    }
+    insta::assert_snapshot!(String::from_utf8_lossy(&warnings), @r"
+    non-forced refspecs are not supported: refs/heads/non-forced
+    non-forced refspecs are not supported: refs/heads/non-forced:refs/remotes/origin/non-forced
+    remote renaming not supported: +refs/heads/wrong-dst:refs/remotes/tags/wrong-dst
+    remote renaming not supported: +refs/heads/wrong-remote:refs/remotes/origin2/wrong-remote
+    only refs/heads/ is supported for refspec sources: +refs/tags/wrong-src:refs/remotes/origin/wrong-src
+    ");
+
+    let repo = tx.commit("test").unwrap();
+    let view = repo.view();
+
+    assert_eq!(view.git_refs(), &expected_git_refs);
 }
 
 #[test]

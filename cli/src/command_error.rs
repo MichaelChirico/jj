@@ -574,6 +574,7 @@ jj currently does not support partial clones. To use jj with this repository, tr
                 ),
                 GitFetchError::InvalidBranchPattern(_) => user_error(err),
                 GitFetchError::Subprocess(_) => user_error(err),
+                GitFetchError::InvalidRemoteConfiguration(_, _) => user_error(err),
             }
         }
     }
