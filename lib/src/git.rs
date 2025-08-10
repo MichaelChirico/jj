@@ -21,6 +21,7 @@ use std::collections::HashSet;
 use std::default::Default;
 use std::fs::File;
 use std::num::NonZeroU32;
+use std::ops;
 use std::path::PathBuf;
 use std::str;
 use std::sync::Arc;
@@ -2133,6 +2134,30 @@ fn expand_fetch_refspecs(
         .collect()
 }
 
+/// A list of refspecs that were ignored during a fetch. Callers should
+/// consider displaying these in the UI as appropriate.
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct IgnoredRefspecs(pub Vec<IgnoredRefspec>);
+
+impl ops::Deref for IgnoredRefspecs {
+    type Target = Vec<IgnoredRefspec>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl ops::DerefMut for IgnoredRefspecs {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+/// A refspec that was ignored during a fetch.
+#[derive(Debug)]
+pub struct IgnoredRefspec {}
+
 /// Helper struct to execute multiple `git fetch` operations
 pub struct GitFetch<'a> {
     mut_repo: &'a mut MutableRepo,
@@ -2173,7 +2198,7 @@ impl<'a> GitFetch<'a> {
         mut callbacks: RemoteCallbacks<'_>,
         depth: Option<NonZeroU32>,
         fetch_tags_override: Option<FetchTagsOverride>,
-    ) -> Result<(), GitFetchError> {
+    ) -> Result<IgnoredRefspecs, GitFetchError> {
         validate_remote_name(remote_name)?;
 
         // check the remote exists
@@ -2189,7 +2214,7 @@ impl<'a> GitFetch<'a> {
         let mut remaining_refspecs: Vec<_> = expand_fetch_refspecs(remote_name, branch_names)?;
         if remaining_refspecs.is_empty() {
             // Don't fall back to the base refspecs.
-            return Ok(());
+            return Ok(IgnoredRefspecs(vec![]));
         }
 
         let mut branches_to_prune = Vec::new();
@@ -2226,7 +2251,7 @@ impl<'a> GitFetch<'a> {
             remote: remote_name.to_owned(),
             branches: branch_names.to_vec(),
         });
-        Ok(())
+        Ok(IgnoredRefspecs(vec![]))
     }
 
     /// Queries remote for the default branch name.

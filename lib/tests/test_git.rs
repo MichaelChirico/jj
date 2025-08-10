@@ -83,12 +83,14 @@ use testutils::write_random_commit;
 use testutils::write_random_commit_with_parents;
 
 /// Describes successful `fetch()` result.
-#[derive(Clone, Debug, Eq, PartialEq, Default)]
+#[derive(Debug)]
 struct GitFetchStats {
     /// Remote's default branch.
     pub default_branch: Option<RefNameBuf>,
     /// Changes made by the import.
     pub import_stats: git::GitImportStats,
+    /// Warnings raised by the fetch
+    pub ignored_refspecs: git::IgnoredRefspecs,
 }
 
 fn empty_git_commit(
@@ -144,7 +146,7 @@ fn git_fetch(
     fetch_tags_override: Option<FetchTagsOverride>,
 ) -> Result<GitFetchStats, GitFetchError> {
     let mut git_fetch = GitFetch::new(mut_repo, git_settings).unwrap();
-    git_fetch.fetch(
+    let ignored_refspecs = git_fetch.fetch(
         remote_name,
         branch_names,
         git::RemoteCallbacks::default(),
@@ -157,6 +159,7 @@ fn git_fetch(
     let stats = GitFetchStats {
         default_branch,
         import_stats,
+        ignored_refspecs,
     };
     Ok(stats)
 }
@@ -2831,6 +2834,7 @@ fn test_fetch_empty_repo() {
     let GitFetchStats {
         default_branch,
         import_stats,
+        ignored_refspecs: fetch_warnings,
     } = git_fetch(
         tx.repo_mut(),
         "origin".as_ref(),
@@ -2842,6 +2846,7 @@ fn test_fetch_empty_repo() {
     // No default bookmark and no refs
     assert_eq!(default_branch, None);
     assert!(import_stats.abandoned_commits.is_empty());
+    assert!(fetch_warnings.is_empty());
     assert_eq!(*tx.repo().view().git_refs(), btreemap! {});
     assert_eq!(tx.repo().view().bookmarks().count(), 0);
 }
@@ -2859,6 +2864,7 @@ fn test_fetch_initial_commit_head_is_not_set() {
     let GitFetchStats {
         default_branch,
         import_stats,
+        ignored_refspecs: fetch_warnings,
     } = git_fetch(
         tx.repo_mut(),
         "origin".as_ref(),
@@ -2870,6 +2876,7 @@ fn test_fetch_initial_commit_head_is_not_set() {
     // No default bookmark because the origin repo's HEAD wasn't set
     assert_eq!(default_branch, None);
     assert!(import_stats.abandoned_commits.is_empty());
+    assert!(fetch_warnings.is_empty());
     let repo = tx.commit("test").unwrap();
     // The initial commit is visible after git_fetch().
     let view = repo.view();
@@ -2926,6 +2933,7 @@ fn test_fetch_initial_commit_head_is_set() {
     let GitFetchStats {
         default_branch,
         import_stats,
+        ignored_refspecs: fetch_warnings,
     } = git_fetch(
         tx.repo_mut(),
         "origin".as_ref(),
@@ -2937,6 +2945,7 @@ fn test_fetch_initial_commit_head_is_set() {
 
     assert_eq!(default_branch, Some("main".into()));
     assert!(import_stats.abandoned_commits.is_empty());
+    assert!(fetch_warnings.is_empty());
 }
 
 #[test]
@@ -2952,6 +2961,7 @@ fn test_fetch_success() {
     let GitFetchStats {
         default_branch: _,
         import_stats: _,
+        ignored_refspecs: _,
     } = git_fetch(
         tx.repo_mut(),
         "origin".as_ref(),
@@ -2982,6 +2992,7 @@ fn test_fetch_success() {
     let GitFetchStats {
         default_branch,
         import_stats,
+        ignored_refspecs: fetch_warnings,
     } = git_fetch(
         tx.repo_mut(),
         "origin".as_ref(),
@@ -2993,6 +3004,7 @@ fn test_fetch_success() {
     // The default bookmark is "main"
     assert_eq!(default_branch, Some("main".into()));
     assert!(import_stats.abandoned_commits.is_empty());
+    assert!(fetch_warnings.is_empty());
     let repo = tx.commit("test").unwrap();
     // The new commit is visible after we fetch again
     let view = repo.view();
@@ -3041,6 +3053,7 @@ fn test_fetch_prune_deleted_ref() {
     let GitFetchStats {
         default_branch: _,
         import_stats: _,
+        ignored_refspecs: _,
     } = git_fetch(
         tx.repo_mut(),
         "origin".as_ref(),
@@ -3067,6 +3080,7 @@ fn test_fetch_prune_deleted_ref() {
     let GitFetchStats {
         default_branch: _,
         import_stats,
+        ignored_refspecs: fetch_warnings,
     } = git_fetch(
         tx.repo_mut(),
         "origin".as_ref(),
@@ -3076,6 +3090,7 @@ fn test_fetch_prune_deleted_ref() {
     )
     .unwrap();
     assert_eq!(import_stats.abandoned_commits, vec![jj_id(commit)]);
+    assert!(fetch_warnings.is_empty());
     assert!(tx.repo().get_local_bookmark("main".as_ref()).is_absent());
     assert!(
         tx.repo_mut()
@@ -3097,6 +3112,7 @@ fn test_fetch_no_default_branch() {
     let GitFetchStats {
         default_branch: _,
         import_stats: _,
+        ignored_refspecs: _,
     } = git_fetch(
         tx.repo_mut(),
         "origin".as_ref(),
@@ -3119,6 +3135,7 @@ fn test_fetch_no_default_branch() {
     let GitFetchStats {
         default_branch,
         import_stats: _,
+        ignored_refspecs: fetch_warnings,
     } = git_fetch(
         tx.repo_mut(),
         "origin".as_ref(),
@@ -3129,6 +3146,7 @@ fn test_fetch_no_default_branch() {
     .unwrap();
     // There is no default bookmark
     assert_eq!(default_branch, None);
+    assert!(fetch_warnings.is_empty());
 }
 
 #[test]
@@ -3142,6 +3160,7 @@ fn test_fetch_empty_refspecs() {
     let GitFetchStats {
         default_branch: _,
         import_stats: _,
+        ignored_refspecs: _,
     } = git_fetch(tx.repo_mut(), "origin".as_ref(), &[], &git_settings, None).unwrap();
     assert!(
         tx.repo_mut()
@@ -3185,6 +3204,7 @@ fn test_fetch_multiple_branches() {
     let GitFetchStats {
         default_branch: _,
         import_stats,
+        ignored_refspecs: fetch_warnings,
     } = git_fetch(
         tx.repo_mut(),
         "origin".as_ref(),
@@ -3206,6 +3226,7 @@ fn test_fetch_multiple_branches() {
             .collect_vec(),
         [remote_symbol("main", "origin")]
     );
+    assert!(fetch_warnings.is_empty());
 }
 
 #[test]
