@@ -2109,11 +2109,17 @@ struct FetchedBranches {
     branches: Vec<StringPattern>,
 }
 
+struct ExpandedRefSpecs {
+    ignored_refspecs: IgnoredRefspecs,
+    expected_branch_names: Vec<StringPattern>,
+    refspecs: Vec<RefSpec>,
+}
+
 fn expand_fetch_refspecs(
     remote: &RemoteName,
     branch_names: &[StringPattern],
-) -> Result<Vec<RefSpec>, GitFetchError> {
-    branch_names
+) -> Result<ExpandedRefSpecs, GitFetchError> {
+    let refspecs = branch_names
         .iter()
         .map(|pattern| {
             pattern
@@ -2131,7 +2137,13 @@ fn expand_fetch_refspecs(
                 })
                 .ok_or_else(|| GitFetchError::InvalidBranchPattern(pattern.clone()))
         })
-        .collect()
+        .collect::<Result<_, _>>()?;
+
+    Ok(ExpandedRefSpecs {
+        ignored_refspecs: IgnoredRefspecs(vec![]),
+        expected_branch_names: branch_names.to_owned(),
+        refspecs,
+    })
 }
 
 /// A list of refspecs that were ignored during a fetch. Callers should
@@ -2195,7 +2207,7 @@ impl<'a> GitFetch<'a> {
         &mut self,
         remote_name: &RemoteName,
         branch_names: &[StringPattern],
-        mut callbacks: RemoteCallbacks<'_>,
+        callbacks: RemoteCallbacks<'_>,
         depth: Option<NonZeroU32>,
         fetch_tags_override: Option<FetchTagsOverride>,
     ) -> Result<IgnoredRefspecs, GitFetchError> {
@@ -2211,10 +2223,32 @@ impl<'a> GitFetch<'a> {
         }
         // At this point, we are only updating Git's remote tracking branches, not the
         // local branches.
-        let mut remaining_refspecs: Vec<_> = expand_fetch_refspecs(remote_name, branch_names)?;
+        let expanded_refspecs = expand_fetch_refspecs(remote_name, branch_names)?;
+
+        self.fetch_inner(
+            remote_name,
+            expanded_refspecs,
+            callbacks,
+            depth,
+            fetch_tags_override,
+        )
+    }
+
+    fn fetch_inner(
+        &mut self,
+        remote_name: &RemoteName,
+        ExpandedRefSpecs {
+            ignored_refspecs,
+            expected_branch_names,
+            refspecs: mut remaining_refspecs,
+        }: ExpandedRefSpecs,
+        mut callbacks: RemoteCallbacks<'_>,
+        depth: Option<NonZeroU32>,
+        fetch_tags_override: Option<FetchTagsOverride>,
+    ) -> Result<IgnoredRefspecs, GitFetchError> {
         if remaining_refspecs.is_empty() {
             // Don't fall back to the base refspecs.
-            return Ok(IgnoredRefspecs(vec![]));
+            return Ok(ignored_refspecs);
         }
 
         let mut branches_to_prune = Vec::new();
@@ -2249,9 +2283,9 @@ impl<'a> GitFetch<'a> {
 
         self.fetched.push(FetchedBranches {
             remote: remote_name.to_owned(),
-            branches: branch_names.to_vec(),
+            branches: expected_branch_names,
         });
-        Ok(IgnoredRefspecs(vec![]))
+        Ok(ignored_refspecs)
     }
 
     /// Queries remote for the default branch name.
