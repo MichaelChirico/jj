@@ -54,6 +54,12 @@ pub struct GitFetchArgs {
         add = ArgValueCandidates::new(complete::bookmarks),
     )]
     branch: Vec<StringPattern>,
+    /// Fetch only tracked bookmarks
+    ///
+    /// This fetches only bookmarks that are already tracked from the specified
+    /// remote(s).
+    #[arg(long, conflicts_with = "branch")]
+    tracked: bool,
     /// The remote to fetch from (only named remotes are supported, can be
     /// repeated)
     ///
@@ -119,7 +125,7 @@ pub fn cmd_git_fetch(
         .collect_vec();
 
     let mut tx = workspace_command.start_transaction();
-    do_git_fetch(ui, &mut tx, &remotes, &args.branch)?;
+    do_git_fetch(ui, &mut tx, &remotes, &args.branch, args.tracked)?;
     tx.finish(
         ui,
         format!(
@@ -169,18 +175,54 @@ fn do_git_fetch(
     tx: &mut WorkspaceCommandTransaction,
     remotes: &[&RemoteName],
     branch_names: &[StringPattern],
+    tracked: bool,
 ) -> Result<(), CommandError> {
     let git_settings = tx.settings().git_settings()?;
-    let mut git_fetch = GitFetch::new(tx.repo_mut(), &git_settings)?;
 
-    for remote_name in remotes {
+    // Collect branches to fetch for each remote when using --tracked
+    let branches_by_remote = if tracked {
+        remotes
+            .iter()
+            .filter_map(|&remote_name| {
+                let branches = tx
+                    .base_repo()
+                    .view()
+                    .local_remote_bookmarks(remote_name)
+                    .filter(|(_, targets)| targets.remote_ref.is_tracked())
+                    .map(|(name, _)| StringPattern::exact(name))
+                    .collect_vec();
+
+                if branches.is_empty() {
+                    writeln!(
+                        ui.warning_default(),
+                        "No tracked bookmarks found for remote {remote}",
+                        remote = remote_name.as_symbol()
+                    )
+                    .ok();
+                    return None;
+                }
+                Some((remote_name, branches))
+            })
+            .collect_vec()
+    } else {
+        remotes
+            .iter()
+            .map(|&r| (r, branch_names.to_vec()))
+            .collect_vec()
+    };
+
+    let mut git_fetch = GitFetch::new(tx.repo_mut(), &git_settings)?;
+    for (remote_name, branches) in &branches_by_remote {
         with_remote_git_callbacks(ui, |callbacks| {
-            git_fetch.fetch(remote_name, branch_names, callbacks, None, None)
+            git_fetch.fetch(remote_name, branches, callbacks, None, None)
         })?;
     }
     let import_stats = git_fetch.import_refs()?;
     print_git_import_stats(ui, tx.repo(), &import_stats, true)?;
-    warn_if_branches_not_found(ui, tx, branch_names, remotes)
+    if !tracked {
+        warn_if_branches_not_found(ui, tx, branch_names, remotes)?;
+    }
+    Ok(())
 }
 
 fn warn_if_branches_not_found(

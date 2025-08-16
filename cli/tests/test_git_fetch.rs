@@ -1755,3 +1755,167 @@ fn test_git_fetch_preserve_commits_across_repos() {
     [EOF]
     ");
 }
+
+#[test]
+fn test_git_fetch_tracked() {
+    let test_env = TestEnvironment::default();
+    test_env.add_config("git.auto-local-bookmark = true");
+
+    // Set up a remote with multiple bookmarks
+    let remote_path = test_env.env_root().join("remote");
+    let remote_repo = git::init(remote_path.clone());
+    add_commit_to_branch(&remote_repo, "main");
+    add_commit_to_branch(&remote_repo, "feature1");
+    add_commit_to_branch(&remote_repo, "feature2");
+
+    // Initialize jj repo
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
+    let work_dir = test_env.work_dir("repo");
+
+    // Add the remote to the jj repo
+    work_dir
+        .run_jj(["git", "remote", "add", "origin", "../remote"])
+        .success();
+
+    // Initially fetch only main and feature1
+    work_dir
+        .run_jj(["git", "fetch", "--branch", "main", "--branch", "feature1"])
+        .success();
+
+    // Both should be tracked
+    insta::assert_snapshot!(get_bookmark_output(&work_dir), @r###"
+    feature1: txqvqkwm fc8f3f42 message
+      @origin: txqvqkwm fc8f3f42 message
+    main: kmpysrkw 0130f303 message
+      @origin: kmpysrkw 0130f303 message
+    [EOF]
+    "###);
+
+    // Now untrack feature1
+    work_dir
+        .run_jj(["bookmark", "untrack", "feature1@origin"])
+        .success();
+
+    // Verify feature1 is untracked
+    insta::assert_snapshot!(get_bookmark_output(&work_dir), @r###"
+    feature1: txqvqkwm fc8f3f42 message
+    feature1@origin: txqvqkwm fc8f3f42 message
+    main: kmpysrkw 0130f303 message
+      @origin: kmpysrkw 0130f303 message
+    [EOF]
+    "###);
+
+    // Add new commits to all bookmarks on the remote
+    let main_oid = remote_repo
+        .find_reference("refs/heads/main")
+        .unwrap()
+        .peel_to_id_in_place()
+        .unwrap()
+        .detach();
+    let feature1_oid = remote_repo
+        .find_reference("refs/heads/feature1")
+        .unwrap()
+        .peel_to_id_in_place()
+        .unwrap()
+        .detach();
+    let feature2_oid = remote_repo
+        .find_reference("refs/heads/feature2")
+        .unwrap()
+        .peel_to_id_in_place()
+        .unwrap()
+        .detach();
+
+    git::add_commit(
+        &remote_repo,
+        "refs/heads/main",
+        "main2",
+        b"new main content",
+        "new main commit",
+        &[main_oid],
+    );
+    git::add_commit(
+        &remote_repo,
+        "refs/heads/feature1",
+        "feature1_v2",
+        b"new feature1 content",
+        "new feature1 commit",
+        &[feature1_oid],
+    );
+    git::add_commit(
+        &remote_repo,
+        "refs/heads/feature2",
+        "feature2_v2",
+        b"new feature2 content",
+        "new feature2 commit",
+        &[feature2_oid],
+    );
+
+    // Fetch with --tracked should only update main (which is still tracked)
+    work_dir.run_jj(["git", "fetch", "--tracked"]).success();
+
+    // Main should be updated to the new commit, but feature1 should remain
+    // unchanged
+    insta::assert_snapshot!(get_bookmark_output(&work_dir), @r"
+    feature1: txqvqkwm fc8f3f42 message
+    feature1@origin: txqvqkwm fc8f3f42 message
+    main: umpwupyu f19de1a4 new main commit
+      @origin: umpwupyu f19de1a4 new main commit
+    [EOF]
+    ");
+
+    // Now fetch all branches
+    work_dir
+        .run_jj(["git", "fetch", "--branch", "glob:*"])
+        .success();
+
+    // Now feature1@origin gets updated but feature1 stays at old commit
+    // (untracked), feature2 appears for the first time, and main stays at its
+    // already-updated commit
+    insta::assert_snapshot!(get_bookmark_output(&work_dir), @r"
+    feature1: txqvqkwm fc8f3f42 message
+    feature1@origin: nqtxyxyt 30fe0291 new feature1 commit
+    feature2: ptxupkzu 22c3fc9d new feature2 commit
+      @origin: ptxupkzu 22c3fc9d new feature2 commit
+    main: umpwupyu f19de1a4 new main commit
+      @origin: umpwupyu f19de1a4 new main commit
+    [EOF]
+    ");
+}
+
+#[test]
+fn test_git_fetch_tracked_no_tracked_bookmarks() {
+    let test_env = TestEnvironment::default();
+    test_env.add_config("git.auto-local-bookmark = true");
+
+    // Set up a remote with bookmarks
+    let remote_path = test_env.env_root().join("remote");
+    let remote_repo = git::init(remote_path.clone());
+    add_commit_to_branch(&remote_repo, "main");
+    add_commit_to_branch(&remote_repo, "feature");
+
+    // Initialize jj repo
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
+    let work_dir = test_env.work_dir("repo");
+
+    // Add the remote to the jj repo
+    work_dir
+        .run_jj(["git", "remote", "add", "origin", "../remote"])
+        .success();
+
+    // Initially fetch bookmarks
+    work_dir.run_jj(["git", "fetch"]).success();
+
+    // Untrack all bookmarks
+    work_dir
+        .run_jj(["bookmark", "untrack", "glob:*@origin"])
+        .success();
+
+    // Fetch with --tracked should warn that there are no tracked bookmarks
+    let output = work_dir.run_jj(["git", "fetch", "--tracked"]);
+    insta::assert_snapshot!(output, @r"
+    ------- stderr -------
+    Warning: No tracked bookmarks found for remote origin
+    Nothing changed.
+    [EOF]
+    ");
+}
