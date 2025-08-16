@@ -50,7 +50,6 @@ pub struct GitFetchArgs {
     #[arg(
         long, short,
         alias = "bookmark",
-        default_value = "glob:*",
         value_parser = StringPattern::parse,
         add = ArgValueCandidates::new(complete::bookmarks),
     )]

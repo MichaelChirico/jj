@@ -13,6 +13,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * `jj op show` now uses `templates.op_show` configuration for its default template
   instead of `templates.op_log`.
 
+* `jj git fetch` will now only fetch the refspec patterns configured on remotes
+  when the `--bookmark` option is omitted. Only simple refspec patterns
+  are currently supported, and anything else (like refspecs which rename
+  branches) will be ignored.
+
 ### Deprecations
 
 * The on-disk index format has changed. `jj` will write index files in both old

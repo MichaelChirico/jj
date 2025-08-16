@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::io::Write as _;
+
 use testutils::git;
 
 use crate::common::CommandOutput;
@@ -216,6 +218,55 @@ fn test_git_fetch_multiple_remotes() {
       @rem1: ppspxspk 4acd0343 message
     rem2: pzqqpnpo 44c57802 message
       @rem2: pzqqpnpo 44c57802 message
+    [EOF]
+    ");
+}
+
+#[test]
+fn test_git_fetch_with_ignored_refspecs() {
+    let test_env = TestEnvironment::default();
+    test_env.add_config("git.auto-local-bookmark = true");
+    test_env
+        .run_jj_in(".", ["git", "init", "--colocate", "repo"])
+        .success();
+    let source_repo = init_git_remote(&test_env, "origin");
+    add_commit_to_branch(&source_repo, "refs/heads/main");
+    add_commit_to_branch(&source_repo, "refs/heads/foo");
+    add_commit_to_branch(&source_repo, "refs/heads/foobar");
+    add_commit_to_branch(&source_repo, "refs/heads/foobaz");
+    add_commit_to_branch(&source_repo, "refs/heads/bar");
+
+    let work_dir = test_env.work_dir("repo");
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(work_dir.root().join("./.git/config"))
+        .expect("failed to open config file")
+        .write_all(
+            br#"
+                    [remote "origin"]
+                    url = ../origin/.git
+                    fetch = +refs/heads/main:refs/remotes/origin/main
+                    fetch = +refs/heads/foo*:refs/remotes/origin/baz*
+                    fetch = +refs/heads/bar*:refs/tags/bar*
+                    fetch = refs/heads/bar
+                "#,
+        )
+        .expect("failed to update config file");
+
+    let output = work_dir.run_jj(["git", "fetch"]).success();
+
+    insta::assert_snapshot!(output.stdout, @r"");
+    insta::assert_snapshot!(output.stderr, @r#"
+    ignored refspec "refs/heads/bar" from "origin": non-forced refspecs are not supported
+    ignored refspec "+refs/heads/bar*:refs/tags/bar*" from "origin": only refs/remotes/ is supported for fetch destinations
+    ignored refspec "+refs/heads/foo*:refs/remotes/origin/baz*" from "origin": renaming is not supported
+    bookmark: main@origin [new] tracked
+    [EOF]
+    "#);
+    insta::assert_snapshot!(get_bookmark_output(&work_dir), @r"
+    main: tkvpwmxy 4c37c767 message
+      @git: tkvpwmxy 4c37c767 message
+      @origin: tkvpwmxy 4c37c767 message
     [EOF]
     ");
 }
