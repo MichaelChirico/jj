@@ -28,10 +28,10 @@ use bstr::ByteSlice as _;
 use itertools::Itertools as _;
 use thiserror::Error;
 
+use crate::git::FetchRefSpec;
 use crate::git::FetchTagsOverride;
 use crate::git::GitPushStats;
 use crate::git::Progress;
-use crate::git::RefSpec;
 use crate::git::RefToPush;
 use crate::git::RemoteCallbacks;
 use crate::git_backend::GitBackend;
@@ -159,7 +159,7 @@ impl<'a> GitSubprocessContext<'a> {
     pub(crate) fn spawn_fetch(
         &self,
         remote_name: &RemoteName,
-        refspecs: &[RefSpec],
+        refspecs: &[FetchRefSpec],
         callbacks: &mut RemoteCallbacks<'_>,
         depth: Option<NonZeroU32>,
         fetch_tags_override: Option<FetchTagsOverride>,

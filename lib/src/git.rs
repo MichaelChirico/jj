@@ -192,6 +192,46 @@ impl RefSpec {
     }
 }
 
+/// Representation of a negative Git refspec
+#[repr(transparent)]
+pub(crate) struct NegativeRefSpec {
+    source: String,
+}
+
+impl NegativeRefSpec {
+    fn negative(source: impl Into<String>) -> Self {
+        Self {
+            source: source.into(),
+        }
+    }
+
+    pub(crate) fn to_git_format(&self) -> String {
+        format!("^{}", self.source)
+    }
+}
+
+/// Representation of a fetch Git refspec
+pub(crate) enum FetchRefSpec {
+    Normal(RefSpec),
+    Negative(NegativeRefSpec),
+}
+
+impl FetchRefSpec {
+    pub(crate) fn to_git_format(&self) -> String {
+        match self {
+            Self::Normal(ref_spec) => ref_spec.to_git_format(),
+            Self::Negative(ref_spec) => ref_spec.to_git_format(),
+        }
+    }
+
+    pub(crate) fn source(&self) -> Option<&str> {
+        match self {
+            Self::Normal(ref_spec) => ref_spec.source.as_deref(),
+            Self::Negative(ref_spec) => Some(&ref_spec.source),
+        }
+    }
+}
+
 /// Helper struct that matches a refspec with its expected location in the
 /// remote it's being pushed to
 pub(crate) struct RefToPush<'a> {
@@ -2116,7 +2156,7 @@ struct FetchedBranches {
 struct ExpandedRefSpecs {
     ignored_refspecs: IgnoredRefspecs,
     expected_branch_names: Vec<StringPattern>,
-    refspecs: Vec<RefSpec>,
+    refspecs: Vec<FetchRefSpec>,
 }
 
 fn expand_fetch_refspecs(
@@ -2134,10 +2174,10 @@ fn expand_fetch_refspecs(
                     |glob| !glob.contains(INVALID_REFSPEC_CHARS),
                 )
                 .map(|glob| {
-                    RefSpec::forced(
+                    FetchRefSpec::Normal(RefSpec::forced(
                         format!("refs/heads/{glob}"),
                         format!("refs/remotes/{remote}/{glob}", remote = remote.as_str()),
-                    )
+                    ))
                 })
                 .ok_or_else(|| GitFetchError::InvalidBranchPattern(pattern.clone()))
         })
@@ -2260,7 +2300,7 @@ fn expand_fetch_refspecs_from_remote_definitions(
             };
             expected_branch_names.push(branch);
 
-            Some(RefSpec::forced(src, dst))
+            Some(FetchRefSpec::Normal(RefSpec::forced(src, dst)))
         })
         .collect();
 
@@ -2402,7 +2442,7 @@ impl<'a> GitFetch<'a> {
             fetch_tags_override,
         )? {
             tracing::debug!(failing_refspec, "failed to fetch ref");
-            remaining_refspecs.retain(|r| r.source.as_ref() != Some(&failing_refspec));
+            remaining_refspecs.retain(|r| r.source() != Some(&failing_refspec));
 
             if let Some(branch_name) = failing_refspec.strip_prefix("refs/heads/") {
                 branches_to_prune.push(format!(
