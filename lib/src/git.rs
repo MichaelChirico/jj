@@ -2316,6 +2316,7 @@ fn expand_fetch_refspecs_from_remote_definitions(
 /// consider displaying these in the UI as appropriate.
 #[derive(Debug)]
 #[repr(transparent)]
+#[must_use = "warnings should be surfaced in the UI"]
 pub struct IgnoredRefspecs(pub Vec<IgnoredRefspec>);
 
 impl ops::Deref for IgnoredRefspecs {

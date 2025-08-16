@@ -21,6 +21,7 @@ mod push;
 mod remote;
 mod root;
 
+use std::io::Write as _;
 use std::path::Path;
 
 use clap::Subcommand;
@@ -28,7 +29,10 @@ use clap::ValueEnum;
 use jj_lib::config::ConfigFile;
 use jj_lib::config::ConfigSource;
 use jj_lib::git;
+use jj_lib::git::IgnoredRefspec;
+use jj_lib::git::IgnoredRefspecs;
 use jj_lib::git::UnexpectedGitBackendError;
+use jj_lib::ref_name::RemoteName;
 use jj_lib::ref_name::RemoteNameBuf;
 use jj_lib::ref_name::RemoteRefSymbol;
 use jj_lib::store::Store;
@@ -131,6 +135,22 @@ fn write_repository_level_trunk_alias(
         ui.status(),
         "Setting the revset alias `trunk()` to `{symbol}`",
     )?;
+    Ok(())
+}
+
+fn warn_ignored_refspecs(
+    ui: &Ui,
+    remote_name: &RemoteName,
+    IgnoredRefspecs(ignored_refspecs): IgnoredRefspecs,
+) -> Result<(), CommandError> {
+    let remote_name = remote_name.as_str();
+    let mut stderr = ui.stderr();
+    for IgnoredRefspec { refspec, reason } in ignored_refspecs {
+        write!(stderr, "ignored refspec \"")?;
+        refspec.to_ref().instruction().write_to(&mut stderr)?;
+        writeln!(stderr, "\" from \"{remote_name}\": {reason}")?;
+    }
+
     Ok(())
 }
 

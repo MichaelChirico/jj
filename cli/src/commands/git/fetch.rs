@@ -30,6 +30,7 @@ use crate::command_error::CommandError;
 use crate::command_error::config_error;
 use crate::command_error::user_error;
 use crate::commands::git::get_single_remote;
+use crate::commands::git::warn_ignored_refspecs;
 use crate::complete;
 use crate::git_util::print_git_import_stats;
 use crate::git_util::with_remote_git_callbacks;
@@ -174,9 +175,10 @@ fn do_git_fetch(
     let mut git_fetch = GitFetch::new(tx.repo_mut(), &git_settings)?;
 
     for remote_name in remotes {
-        with_remote_git_callbacks(ui, |callbacks| {
+        let ignored_refspecs = with_remote_git_callbacks(ui, |callbacks| {
             git_fetch.fetch(remote_name, branch_names, callbacks, None, None)
         })?;
+        warn_ignored_refspecs(ui, remote_name, ignored_refspecs)?;
     }
     let import_stats = git_fetch.import_refs()?;
     print_git_import_stats(ui, tx.repo(), &import_stats, true)?;
