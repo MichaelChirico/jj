@@ -3163,6 +3163,7 @@ fn test_fetch_empty_refspecs() {
 
     let excluded = [
         "refs/heads/excluded",
+        "refs/heads/fooqux",
         "refs/heads/non-forced",
         "refs/heads/renamed",
         "refs/heads/wrong-remote",
@@ -3217,6 +3218,8 @@ fn test_fetch_empty_refspecs() {
                     fetch = +refs/heads/main:refs/remotes/origin/main
                     fetch = +refs/heads/foo*:refs/remotes/origin/foo*
                     fetch = +refs/heads/src-only
+                    fetch = ^refs/heads/excluded
+                    fetch = ^refs/heads/fooqux
                     # Invalid
                     fetch = refs/heads/src-only
                     fetch = refs/heads/non-forced

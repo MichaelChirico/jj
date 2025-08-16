@@ -2223,15 +2223,16 @@ fn expand_fetch_refspecs_from_remote_definitions(
                 Instruction::Fetch(fetch) => match fetch {
                     gix::refspec::instruction::Fetch::Only { src } => (ensure_utf8(src)?, None),
 
-                    // TODO: these need to be included, but we currently have no way to express
-                    // negative refspecs
-                    gix::refspec::instruction::Fetch::Exclude { src: _ } => return None,
-
                     gix::refspec::instruction::Fetch::AndUpdate {
                         src,
                         dst,
                         allow_non_fast_forward: _, // Already captured above
                     } => (ensure_utf8(src)?, Some(ensure_utf8(dst)?)),
+
+                    gix::refspec::instruction::Fetch::Exclude { src } => {
+                        let src = ensure_utf8(src)?;
+                        return Some(FetchRefSpec::Negative(NegativeRefSpec::negative(src)));
+                    }
                 },
             };
 
