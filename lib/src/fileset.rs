@@ -111,10 +111,12 @@ impl FilePattern {
         match kind {
             "cwd" => Self::cwd_prefix_path(path_converter, input),
             "cwd-file" | "file" => Self::cwd_file_path(path_converter, input),
-            "cwd-glob" | "glob" => Self::cwd_file_glob(path_converter, input),
+            "cwd-glob" | "glob" => Self::cwd_file_glob(path_converter, input, false),
+            "cwd-glob-i" | "glob-i" => Self::cwd_file_glob(path_converter, input, true),
             "root" => Self::root_prefix_path(input),
             "root-file" => Self::root_file_path(input),
-            "root-glob" => Self::root_file_glob(input),
+            "root-glob" => Self::root_file_glob(input, false),
+            "root-glob-i" => Self::root_file_glob(input, true),
             _ => Err(FilePatternParseError::InvalidKind(kind.to_owned())),
         }
     }
@@ -141,10 +143,19 @@ impl FilePattern {
     pub fn cwd_file_glob(
         path_converter: &RepoPathUiConverter,
         input: impl AsRef<str>,
+        case_insensitive: bool,
     ) -> Result<Self, FilePatternParseError> {
-        let (dir, pattern) = split_glob_path(input.as_ref());
-        let dir = path_converter.parse_file_path(dir)?;
-        Self::file_glob_at(dir, pattern)
+        if case_insensitive {
+            // For case-insensitive patterns, don't split the path - treat the entire
+            // input as a pattern relative to cwd to enable case-insensitive directory
+            // matching
+            let cwd = path_converter.parse_file_path("")?;
+            Self::file_glob_at(cwd, input.as_ref(), case_insensitive)
+        } else {
+            let (dir, pattern) = split_glob_path(input.as_ref());
+            let dir = path_converter.parse_file_path(dir)?;
+            Self::file_glob_at(dir, pattern, case_insensitive)
+        }
     }
 
     /// Pattern that matches workspace-relative file (or exact) path.
@@ -161,19 +172,36 @@ impl FilePattern {
     }
 
     /// Pattern that matches workspace-relative file path glob.
-    pub fn root_file_glob(input: impl AsRef<str>) -> Result<Self, FilePatternParseError> {
-        let (dir, pattern) = split_glob_path(input.as_ref());
-        let dir = RepoPathBuf::from_relative_path(dir)?;
-        Self::file_glob_at(dir, pattern)
+    pub fn root_file_glob(
+        input: impl AsRef<str>,
+        case_insensitive: bool,
+    ) -> Result<Self, FilePatternParseError> {
+        if case_insensitive {
+            // For case-insensitive patterns, don't split the path - treat the entire
+            // input as a pattern relative to repo root to enable case-insensitive directory
+            // matching
+            Self::file_glob_at(RepoPathBuf::root(), input.as_ref(), case_insensitive)
+        } else {
+            let (dir, pattern) = split_glob_path(input.as_ref());
+            let dir = RepoPathBuf::from_relative_path(dir)?;
+            Self::file_glob_at(dir, pattern, case_insensitive)
+        }
     }
 
-    fn file_glob_at(dir: RepoPathBuf, input: &str) -> Result<Self, FilePatternParseError> {
+    fn file_glob_at(
+        dir: RepoPathBuf,
+        input: &str,
+        case_insensitive: bool,
+    ) -> Result<Self, FilePatternParseError> {
         if input.is_empty() {
             return Ok(Self::FilePath(dir));
         }
         // Normalize separator to '/', reject ".." which will never match
         let normalized = RepoPathBuf::from_relative_path(input)?;
-        let pattern = Box::new(parse_file_glob(normalized.as_internal_file_string())?);
+        let pattern = Box::new(parse_file_glob(
+            normalized.as_internal_file_string(),
+            case_insensitive,
+        )?);
         Ok(Self::FileGlob { dir, pattern })
     }
 
@@ -188,8 +216,11 @@ impl FilePattern {
     }
 }
 
-pub(super) fn parse_file_glob(input: &str) -> Result<Glob, globset::Error> {
-    GlobBuilder::new(input).literal_separator(true).build()
+pub(super) fn parse_file_glob(input: &str, case_insensitive: bool) -> Result<Glob, globset::Error> {
+    GlobBuilder::new(input)
+        .literal_separator(true)
+        .case_insensitive(case_insensitive)
+        .build()
 }
 
 /// Splits `input` path into literal directory path and glob pattern.
@@ -796,6 +827,97 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_glob_pattern_case_insensitive() {
+        let settings = insta_settings();
+        let _guard = settings.bind_to_scope();
+        let path_converter = RepoPathUiConverter::Fs {
+            cwd: PathBuf::from("/ws/cur"),
+            base: PathBuf::from("/ws"),
+        };
+        let parse = |text| parse_maybe_bare(&mut FilesetDiagnostics::new(), text, &path_converter);
+
+        // cwd-relative case-insensitive glob
+        insta::assert_debug_snapshot!(
+            parse(r#"glob-i:"*.TXT""#).unwrap(), @r#"
+        Pattern(
+            FileGlob {
+                dir: "cur",
+                pattern: Glob {
+                    glob: "*.TXT",
+                    re: "(?-u)(?i)^[^/]*\\.TXT$",
+                    opts: _,
+                    tokens: _,
+                },
+            },
+        )
+        "#);
+
+        // cwd-relative case-insensitive glob with more specific pattern
+        insta::assert_debug_snapshot!(
+            parse(r#"cwd-glob-i:"[Ff]oo""#).unwrap(), @r#"
+        Pattern(
+            FileGlob {
+                dir: "cur",
+                pattern: Glob {
+                    glob: "[Ff]oo",
+                    re: "(?-u)(?i)^[Ff]oo$",
+                    opts: _,
+                    tokens: _,
+                },
+            },
+        )
+        "#);
+
+        // workspace-relative case-insensitive glob
+        insta::assert_debug_snapshot!(
+            parse(r#"root-glob-i:"*.Rs""#).unwrap(), @r#"
+        Pattern(
+            FileGlob {
+                dir: "",
+                pattern: Glob {
+                    glob: "*.Rs",
+                    re: "(?-u)(?i)^[^/]*\\.Rs$",
+                    opts: _,
+                    tokens: _,
+                },
+            },
+        )
+        "#);
+
+        // case-insensitive pattern with directory component (should not split the path)
+        insta::assert_debug_snapshot!(
+            parse(r#"glob-i:"SubDir/*.rs""#).unwrap(), @r#"
+        Pattern(
+            FileGlob {
+                dir: "cur",
+                pattern: Glob {
+                    glob: "SubDir/*.rs",
+                    re: "(?-u)(?i)^SubDir/[^/]*\\.rs$",
+                    opts: _,
+                    tokens: _,
+                },
+            },
+        )
+        "#);
+
+        // case-sensitive pattern with directory component (should split the path)
+        insta::assert_debug_snapshot!(
+            parse(r#"glob:"SubDir/*.rs""#).unwrap(), @r#"
+        Pattern(
+            FileGlob {
+                dir: "cur/SubDir",
+                pattern: Glob {
+                    glob: "*.rs",
+                    re: "(?-u)^[^/]*\\.rs$",
+                    opts: _,
+                    tokens: _,
+                },
+            },
+        )
+        "#);
+    }
+
+    #[test]
     fn test_parse_function() {
         let settings = insta_settings();
         let _guard = settings.bind_to_scope();
@@ -928,7 +1050,7 @@ mod tests {
         let glob_expr = |dir: &str, pattern: &str| {
             FilesetExpression::pattern(FilePattern::FileGlob {
                 dir: repo_path_buf(dir),
-                pattern: Box::new(parse_file_glob(pattern).unwrap()),
+                pattern: Box::new(parse_file_glob(pattern, false).unwrap()),
             })
         };
 
