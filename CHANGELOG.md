@@ -29,8 +29,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   files. This compatibility layer will be removed in a future release.
 
 * `jj op undo` is deprecated in favor of `jj op revert`. (`jj undo` is still
-  available unchanged, but we plan to enable undoing multiple operations
-  progressively by repeated calls to `jj undo`.)
+  available, but with new semantics. See also the new features below.)
 
 * The argument `<operation>` of `jj undo` is deprecated in favor of
   `jj op revert <operation>`.
@@ -76,6 +75,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 * `jj squash` has gained `--insert-before`, `--insert-after`, and `--destination`
   options.
+
+* `jj undo` can now undo multiple operations progressively by calling it
+  repeatedly. (This is technically a breaking change. Running `jj undo` twice
+  was previously a no-op. But that's almost certainly a user error, so this
+  change is unlikely to affect users in a breaking way.)
 
 ### Fixed bugs
 

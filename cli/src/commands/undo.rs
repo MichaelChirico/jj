@@ -15,7 +15,6 @@
 use clap_complete::ArgValueCandidates;
 use itertools::Itertools as _;
 use jj_lib::object_id::ObjectId as _;
-use jj_lib::op_store::OpStoreError;
 use jj_lib::operation::Operation;
 
 use crate::cli_util::CommandHelper;
@@ -27,19 +26,6 @@ use crate::commands::operation::revert::OperationRevertArgs;
 use crate::commands::operation::revert::cmd_op_revert_with_tx_description;
 use crate::complete;
 use crate::ui::Ui;
-
-// Checks whether `op` resets the view of `parent_op` to the view of the
-// grandparent op.
-//
-// This is a necessary condition for `op` to be a revert of `parent_op` but is
-// not sufficient. For example, deleting a bookmark also resets the view
-// similarly but is not a literal `revert` operation.
-fn resets_view_of(op: &Operation, parent_op: &Operation) -> Result<bool, OpStoreError> {
-    let Ok(grandparent_op) = parent_op.parents().exactly_one() else {
-        return Ok(false);
-    };
-    Ok(op.view_id() == grandparent_op?.view_id())
-}
 
 /// Undo the last operation
 ///
@@ -62,8 +48,10 @@ pub struct UndoArgs {
     what: Vec<RevertWhatToRestore>,
 }
 
+const UNDO_OP_DESC_PREFIX: &str = "undo operation ";
+
 fn tx_description(op: &Operation) -> String {
-    format!("undo operation {}", op.id().hex())
+    format!("{UNDO_OP_DESC_PREFIX}{}", op.id().hex())
 }
 
 pub fn cmd_undo(ui: &mut Ui, command: &CommandHelper, args: &UndoArgs) -> Result<(), CommandError> {
@@ -72,56 +60,69 @@ pub fn cmd_undo(ui: &mut Ui, command: &CommandHelper, args: &UndoArgs) -> Result
             ui.warning_default(),
             "`jj undo <operation>` is deprecated; use `jj op revert <operation>` instead"
         )?;
+        let args = OperationRevertArgs {
+            operation: args.operation.clone(),
+            what: args.what.clone(),
+        };
+        return cmd_op_revert_with_tx_description(ui, command, &args, tx_description);
     }
+
     let workspace_command = command.workspace_helper(ui)?;
-    let bad_op = workspace_command.resolve_single_op(&args.operation)?;
-    let parent_of_bad_op = match bad_op.parents().at_most_one() {
-        Ok(Some(parent_of_bad_op)) => parent_of_bad_op?,
-        Ok(None) => return Err(user_error("Cannot undo root operation")),
-        Err(_) => return Err(user_error("Cannot undo a merge operation")),
-    };
+
+    let mut op_to_undo = workspace_command.resolve_single_op(&args.operation)?;
+
+    // Growing the "undo-stack" works like this:
+    // - If the operation to undo is a regular one (not an undo-operation), simply
+    //   undo it.
+    // - If the operation to undo is an undo-operation itself, try to undo the
+    //   parent of the operation that was already undone.
+    // - Repeat the process of following undo-operations to the operations they
+    //   undid until the first undoable operation is found - then undo it.
+    //
+    // This described behavior leads to "jumping over" old undo-stacks if the
+    // current one grows into it. For example, Consider the this op-log example:
+    //
+    // * F "undo A" ---+
+    // |               |
+    // * E "undo D" -+ |
+    // |             | |
+    // * D   <-------+ |
+    // |               |
+    // * C "undo B" -+ |
+    // |             | |
+    // * B   <-------+ |
+    // |               |
+    // * A   <---------+
+    //
+    // It was produced by the following sequence of events:
+    // - do normal operation A
+    // - do normal operation B
+    // - undo B
+    // - do normal operation D
+    // - undo D
+    // - undo A
+    //
+    // Notice that running `undo` after having undone D leads to A being undone
+    // (as opposed to C). The undo-stack spanning B and C was "jumped over".
+    //
+    while let Some(id_of_undone_op) = op_to_undo
+        .metadata()
+        .description
+        .strip_prefix(UNDO_OP_DESC_PREFIX)
+    {
+        let undone_op = workspace_command.resolve_single_op(id_of_undone_op)?;
+        op_to_undo = match undone_op.parents().at_most_one() {
+            Ok(Some(parent_of_undone_op)) => parent_of_undone_op?,
+            Ok(None) => return Err(user_error("Cannot undo root operation")),
+            Err(_) => return Err(user_error("Cannot undo a merge operation")),
+        };
+    }
 
     let args = OperationRevertArgs {
-        operation: args.operation.clone(),
+        operation: op_to_undo.id().to_string(),
         what: args.what.clone(),
     };
     cmd_op_revert_with_tx_description(ui, command, &args, tx_description)?;
-
-    // Check if the user performed a "double undo", i.e. the current `undo` (C)
-    // reverts an immediately preceding `undo` (B) that is itself an `undo` of the
-    // operation preceding it (A).
-    //
-    //    C (undo of B)
-    // @  B (`bad_op` = undo of A)
-    // ○  A
-    //
-    // An exception is made for when the user specified the immediately preceding
-    // `undo` with an op set. In this situation, the user's intent is clear, so
-    // a warning is not shown.
-    //
-    // Note that undoing an older `undo` does not constitute a "double undo". For
-    // example, the current `undo` (D) here reverts an `undo` B that is not the
-    // immediately preceding operation (C). A warning is not shown in this case.
-    //
-    //    D (undo of B)
-    // @  C (unrelated operation)
-    // ○  B (`bad_op` = undo of A)
-    // ○  A
-    if args.operation == "@"
-        && resets_view_of(&bad_op, &parent_of_bad_op)?
-        && bad_op.metadata().description == tx_description(&parent_of_bad_op)
-    {
-        writeln!(
-            ui.warning_default(),
-            "The second-last `jj undo` was reverted by the latest `jj undo`. The repo is now in \
-             the same state as it was before the second-last `jj undo`."
-        )?;
-        writeln!(
-            ui.hint_default(),
-            "To undo multiple operations, use `jj op log` to see past states and `jj op restore` \
-             to restore one of these states."
-        )?;
-    }
 
     Ok(())
 }
