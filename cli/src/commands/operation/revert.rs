@@ -46,7 +46,7 @@ pub struct OperationRevertArgs {
     pub(crate) what: Vec<RevertWhatToRestore>, // pub for `jj undo`
 }
 
-pub(crate) fn tx_description(op: &Operation) -> String {
+fn tx_description(op: &Operation) -> String {
     format!("revert operation {}", op.id().hex())
 }
 
@@ -54,6 +54,15 @@ pub fn cmd_op_revert(
     ui: &mut Ui,
     command: &CommandHelper,
     args: &OperationRevertArgs,
+) -> Result<(), CommandError> {
+    cmd_op_revert_with_tx_description(ui, command, args, tx_description)
+}
+
+pub(crate) fn cmd_op_revert_with_tx_description(
+    ui: &mut Ui,
+    command: &CommandHelper,
+    args: &OperationRevertArgs,
+    tx_description: fn(op: &Operation) -> String,
 ) -> Result<(), CommandError> {
     let mut workspace_command = command.workspace_helper(ui)?;
     let bad_op = workspace_command.resolve_single_op(&args.operation)?;

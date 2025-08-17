@@ -14,6 +14,7 @@
 
 use clap_complete::ArgValueCandidates;
 use itertools::Itertools as _;
+use jj_lib::object_id::ObjectId as _;
 use jj_lib::op_store::OpStoreError;
 use jj_lib::operation::Operation;
 
@@ -23,8 +24,7 @@ use crate::command_error::user_error;
 use crate::commands::operation::DEFAULT_REVERT_WHAT;
 use crate::commands::operation::RevertWhatToRestore;
 use crate::commands::operation::revert::OperationRevertArgs;
-use crate::commands::operation::revert::cmd_op_revert;
-use crate::commands::operation::revert::tx_description;
+use crate::commands::operation::revert::cmd_op_revert_with_tx_description;
 use crate::complete;
 use crate::ui::Ui;
 
@@ -62,6 +62,10 @@ pub struct UndoArgs {
     what: Vec<RevertWhatToRestore>,
 }
 
+fn tx_description(op: &Operation) -> String {
+    format!("undo operation {}", op.id().hex())
+}
+
 pub fn cmd_undo(ui: &mut Ui, command: &CommandHelper, args: &UndoArgs) -> Result<(), CommandError> {
     if args.operation != "@" {
         writeln!(
@@ -81,7 +85,7 @@ pub fn cmd_undo(ui: &mut Ui, command: &CommandHelper, args: &UndoArgs) -> Result
         operation: args.operation.clone(),
         what: args.what.clone(),
     };
-    cmd_op_revert(ui, command, &args)?;
+    cmd_op_revert_with_tx_description(ui, command, &args, tx_description)?;
 
     // Check if the user performed a "double undo", i.e. the current `undo` (C)
     // reverts an immediately preceding `undo` (B) that is itself an `undo` of the
