@@ -81,6 +81,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   was previously a no-op. But that's almost certainly a user error, so this
   change is unlikely to affect users in a breaking way.)
 
+* The new command `jj redo` can progressively redo operations that were
+  previously undone by multiple calls to `jj undo`.
+
 ### Fixed bugs
 
 * `jj git clone` now correctly fetches all tags, unless `--fetch-tags` is
