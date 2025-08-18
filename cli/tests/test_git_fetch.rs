@@ -19,14 +19,22 @@ use crate::common::TestEnvironment;
 use crate::common::TestWorkDir;
 use crate::common::create_commit;
 
-fn add_commit_to_branch(git_repo: &gix::Repository, branch: &str) -> gix::ObjectId {
+fn add_commit_to_branch(git_repo: &gix::Repository, branch: &str, message: &str) -> gix::ObjectId {
+    // Get current commit ID of the branch if it exists
+    let parents = git_repo
+        .find_reference(&format!("refs/heads/{branch}"))
+        .ok()
+        .and_then(|mut r| r.peel_to_commit().ok())
+        .map(|c| vec![c.id().detach()])
+        .unwrap_or_default();
+
     git::add_commit(
         git_repo,
         &format!("refs/heads/{branch}"),
         branch,            // filename
         branch.as_bytes(), // content
-        "message",
-        &[],
+        message,
+        &parents,
     )
     .commit_id
 }
@@ -35,7 +43,7 @@ fn add_commit_to_branch(git_repo: &gix::Repository, branch: &str) -> gix::Object
 fn init_git_remote(test_env: &TestEnvironment, remote: &str) -> gix::Repository {
     let git_repo_path = test_env.env_root().join(remote);
     let git_repo = git::init(git_repo_path);
-    add_commit_to_branch(&git_repo, remote);
+    add_commit_to_branch(&git_repo, remote, "message");
 
     git_repo
 }
@@ -1674,7 +1682,7 @@ fn test_git_fetch_preserve_commits_across_repos() {
         .success();
 
     // add commit to fork remote in another branch
-    add_commit_to_branch(&fork_repo, "feature");
+    add_commit_to_branch(&fork_repo, "feature", "message");
 
     // fetch remote bookmarks
     work_dir
@@ -1764,9 +1772,9 @@ fn test_git_fetch_tracked() {
     // Set up a remote with multiple bookmarks
     let remote_path = test_env.env_root().join("remote");
     let remote_repo = git::init(remote_path.clone());
-    add_commit_to_branch(&remote_repo, "main");
-    add_commit_to_branch(&remote_repo, "feature1");
-    add_commit_to_branch(&remote_repo, "feature2");
+    add_commit_to_branch(&remote_repo, "main", "message");
+    add_commit_to_branch(&remote_repo, "feature1", "message");
+    add_commit_to_branch(&remote_repo, "feature2", "message");
 
     // Initialize jj repo
     test_env.run_jj_in(".", ["git", "init", "repo"]).success();
@@ -1806,49 +1814,9 @@ fn test_git_fetch_tracked() {
     "###);
 
     // Add new commits to all bookmarks on the remote
-    let main_oid = remote_repo
-        .find_reference("refs/heads/main")
-        .unwrap()
-        .peel_to_id_in_place()
-        .unwrap()
-        .detach();
-    let feature1_oid = remote_repo
-        .find_reference("refs/heads/feature1")
-        .unwrap()
-        .peel_to_id_in_place()
-        .unwrap()
-        .detach();
-    let feature2_oid = remote_repo
-        .find_reference("refs/heads/feature2")
-        .unwrap()
-        .peel_to_id_in_place()
-        .unwrap()
-        .detach();
-
-    git::add_commit(
-        &remote_repo,
-        "refs/heads/main",
-        "main2",
-        b"new main content",
-        "new main commit",
-        &[main_oid],
-    );
-    git::add_commit(
-        &remote_repo,
-        "refs/heads/feature1",
-        "feature1_v2",
-        b"new feature1 content",
-        "new feature1 commit",
-        &[feature1_oid],
-    );
-    git::add_commit(
-        &remote_repo,
-        "refs/heads/feature2",
-        "feature2_v2",
-        b"new feature2 content",
-        "new feature2 commit",
-        &[feature2_oid],
-    );
+    add_commit_to_branch(&remote_repo, "main", "message");
+    add_commit_to_branch(&remote_repo, "feature1", "message");
+    add_commit_to_branch(&remote_repo, "feature2", "message");
 
     // Fetch with --tracked should only update main (which is still tracked)
     work_dir.run_jj(["git", "fetch", "--tracked"]).success();
@@ -1858,8 +1826,8 @@ fn test_git_fetch_tracked() {
     insta::assert_snapshot!(get_bookmark_output(&work_dir), @r"
     feature1: txqvqkwm fc8f3f42 message
     feature1@origin: txqvqkwm fc8f3f42 message
-    main: umpwupyu f19de1a4 new main commit
-      @origin: umpwupyu f19de1a4 new main commit
+    main: kmktnoqm 381bf13c (empty) message
+      @origin: kmktnoqm 381bf13c (empty) message
     [EOF]
     ");
 
@@ -1873,11 +1841,11 @@ fn test_git_fetch_tracked() {
     // already-updated commit
     insta::assert_snapshot!(get_bookmark_output(&work_dir), @r"
     feature1: txqvqkwm fc8f3f42 message
-    feature1@origin: nqtxyxyt 30fe0291 new feature1 commit
-    feature2: ptxupkzu 22c3fc9d new feature2 commit
-      @origin: ptxupkzu 22c3fc9d new feature2 commit
-    main: umpwupyu f19de1a4 new main commit
-      @origin: umpwupyu f19de1a4 new main commit
+    feature1@origin: ksswsvzv 0c0873bb (empty) message
+    feature2: ruyplonr 13e64e92 (empty) message
+      @origin: ruyplonr 13e64e92 (empty) message
+    main: kmktnoqm 381bf13c (empty) message
+      @origin: kmktnoqm 381bf13c (empty) message
     [EOF]
     ");
 }
@@ -1890,8 +1858,8 @@ fn test_git_fetch_tracked_no_tracked_bookmarks() {
     // Set up a remote with bookmarks
     let remote_path = test_env.env_root().join("remote");
     let remote_repo = git::init(remote_path.clone());
-    add_commit_to_branch(&remote_repo, "main");
-    add_commit_to_branch(&remote_repo, "feature");
+    add_commit_to_branch(&remote_repo, "main", "message");
+    add_commit_to_branch(&remote_repo, "feature", "message");
 
     // Initialize jj repo
     test_env.run_jj_in(".", ["git", "init", "repo"]).success();
@@ -1912,10 +1880,169 @@ fn test_git_fetch_tracked_no_tracked_bookmarks() {
 
     // Fetch with --tracked should warn that there are no tracked bookmarks
     let output = work_dir.run_jj(["git", "fetch", "--tracked"]);
-    insta::assert_snapshot!(output, @r"
+    insta::assert_snapshot!(output, @r#"
     ------- stderr -------
-    Warning: No tracked bookmarks found for remote origin
+    Warning: No tracked bookmarks found for remote "origin"
     Nothing changed.
+    [EOF]
+    "#);
+}
+
+#[test]
+fn test_git_fetch_tracked_with_branch_pattern() {
+    let test_env = TestEnvironment::default();
+    test_env.add_config("git.auto-local-bookmark = true");
+
+    // Set up a remote with multiple bookmarks
+    let remote_path = test_env.env_root().join("remote");
+    let remote_repo = git::init(remote_path.clone());
+    add_commit_to_branch(&remote_repo, "main", "message");
+    add_commit_to_branch(&remote_repo, "feature1", "message");
+    add_commit_to_branch(&remote_repo, "feature2", "message");
+    add_commit_to_branch(&remote_repo, "other", "message");
+
+    // Initialize jj repo
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
+    let work_dir = test_env.work_dir("repo");
+
+    // Add the remote to the jj repo
+    work_dir
+        .run_jj(["git", "remote", "add", "origin", "../remote"])
+        .success();
+
+    // Initially fetch all bookmarks
+    work_dir.run_jj(["git", "fetch"]).success();
+
+    // Untrack 'other' bookmark
+    work_dir
+        .run_jj(["bookmark", "untrack", "other@origin"])
+        .success();
+
+    // Create new commits on remote for all branches
+    add_commit_to_branch(&remote_repo, "main", "message");
+    add_commit_to_branch(&remote_repo, "feature1", "message");
+    add_commit_to_branch(&remote_repo, "feature2", "message");
+    add_commit_to_branch(&remote_repo, "other", "message");
+
+    // Fetch only tracked bookmarks matching 'glob:feature*' pattern
+    let output = work_dir.run_jj(["git", "fetch", "--tracked", "--branch", "glob:feature*"]);
+    insta::assert_snapshot!(output, @r###"
+    ------- stderr -------
+    bookmark: feature1@origin [updated] tracked
+    bookmark: feature2@origin [updated] tracked
+    [EOF]
+    "###);
+
+    // Verify 'main' was not updated (still at old commit) and 'other' is untracked
+    let output = work_dir.run_jj(["bookmark", "list", "--all-remotes"]);
+    insta::assert_snapshot!(output, @r"
+    feature1: ksswsvzv 0c0873bb (empty) message
+      @origin: ksswsvzv 0c0873bb (empty) message
+    feature2: ruyplonr 13e64e92 (empty) message
+      @origin: ruyplonr 13e64e92 (empty) message
+    main: kmpysrkw 0130f303 message
+      @origin: kmpysrkw 0130f303 message
+    other: qtzmqslk 8820d88a message
+    other@origin: qtzmqslk 8820d88a message
+    [EOF]
+    ");
+}
+
+#[test]
+fn test_git_fetch_tracked_multiple_remotes() {
+    let test_env = TestEnvironment::default();
+    test_env.add_config("git.auto-local-bookmark = true");
+
+    // Set up two remotes with different branches
+    let origin_path = test_env.env_root().join("origin");
+    let origin_repo = git::init(origin_path.clone());
+    add_commit_to_branch(&origin_repo, "main", "origin main commit");
+    add_commit_to_branch(&origin_repo, "feature1", "origin feature1 commit");
+    add_commit_to_branch(&origin_repo, "feature2", "origin feature2 commit");
+
+    let upstream_path = test_env.env_root().join("upstream");
+    let upstream_repo = git::init(upstream_path.clone());
+    add_commit_to_branch(&upstream_repo, "main", "upstream main commit");
+    add_commit_to_branch(&upstream_repo, "develop", "upstream develop commit");
+    add_commit_to_branch(&upstream_repo, "hotfix", "upstream hotfix commit");
+
+    // Initialize jj repo
+    test_env.run_jj_in(".", ["git", "init", "repo"]).success();
+    let work_dir = test_env.work_dir("repo");
+
+    // Add both remotes
+    work_dir
+        .run_jj(["git", "remote", "add", "origin", "../origin"])
+        .success();
+    work_dir
+        .run_jj(["git", "remote", "add", "upstream", "../upstream"])
+        .success();
+
+    // Initial fetch from both remotes to set up tracking
+    work_dir.run_jj(["git", "fetch", "--all-remotes"]).success();
+
+    // Track different branches from different remotes
+    work_dir
+        .run_jj(["bookmark", "track", "feature1@origin"])
+        .success();
+    work_dir
+        .run_jj(["bookmark", "track", "develop@upstream"])
+        .success();
+
+    // Untrack some branches to test --tracked behavior
+    work_dir
+        .run_jj(["bookmark", "untrack", "feature2@origin"])
+        .success();
+    work_dir
+        .run_jj(["bookmark", "untrack", "hotfix@upstream"])
+        .success();
+
+    insta::assert_snapshot!(get_bookmark_output(&work_dir), @r"
+    develop: yzkwtzyq 4217fc8a upstream develop commit
+      @upstream: yzkwtzyq 4217fc8a upstream develop commit
+    feature1: ovvpyryn 8a4b3895 origin feature1 commit
+      @origin: ovvpyryn 8a4b3895 origin feature1 commit
+    feature2: ysxnuyrn 95a1c2bd origin feature2 commit
+    feature2@origin: ysxnuyrn 95a1c2bd origin feature2 commit
+    hotfix: pozyxktk e9e38ee9 upstream hotfix commit
+    hotfix@upstream: pozyxktk e9e38ee9 upstream hotfix commit
+    main (conflicted):
+      + orvppysl 25f66480 origin main commit
+      + nrlvptqt f241ccf9 upstream main commit
+      @origin (behind by 1 commits): orvppysl 25f66480 origin main commit
+      @upstream (behind by 1 commits): nrlvptqt f241ccf9 upstream main commit
+    [EOF]
+    ");
+
+    // Add new commits to tracked branches on both remotes
+    add_commit_to_branch(&origin_repo, "feature1", "new origin feature1 commit");
+    add_commit_to_branch(&upstream_repo, "develop", "new upstream develop commit");
+
+    // Add new commits to untracked branches
+    add_commit_to_branch(&origin_repo, "feature2", "new origin feature2 commit");
+    add_commit_to_branch(&upstream_repo, "hotfix", "new upstream hotfix commit");
+
+    // Fetch only tracked branches from all remotes
+    work_dir
+        .run_jj(["git", "fetch", "--tracked", "--all-remotes"])
+        .success();
+
+    // Only the tracked branches should be updated (feature1 and develop)
+    // Untracked branches (feature2, hotfix) should remain at old commits
+    insta::assert_snapshot!(get_bookmark_output(&work_dir), @r"
+    develop: kmsovkut 8b5845da (empty) new upstream develop commit
+      @upstream: kmsovkut 8b5845da (empty) new upstream develop commit
+    feature1: rmmunkwl d676351d (empty) new origin feature1 commit
+      @origin: rmmunkwl d676351d (empty) new origin feature1 commit
+    feature2: ysxnuyrn 95a1c2bd origin feature2 commit
+    feature2@origin: ysxnuyrn 95a1c2bd origin feature2 commit
+    hotfix: pozyxktk e9e38ee9 upstream hotfix commit
+    hotfix@upstream: pozyxktk e9e38ee9 upstream hotfix commit
+    main (conflicted):
+      + orvppysl 25f66480 origin main commit
+      + nrlvptqt f241ccf9 upstream main commit
+      @origin (behind by 1 commits): orvppysl 25f66480 origin main commit
+      @upstream (behind by 1 commits): nrlvptqt f241ccf9 upstream main commit
     [EOF]
     ");
 }

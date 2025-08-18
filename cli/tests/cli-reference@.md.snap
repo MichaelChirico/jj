@@ -1256,14 +1256,12 @@ If a working-copy commit gets abandoned, it will be given a new, empty commit. T
 
 ###### **Options:**
 
-* `-b`, `--branch <BRANCH>` — Fetch only some of the branches
+* `-b`, `--branch <BRANCHES>` — Fetch only some of the branches [default: glob:*]
 
-   By default, the specified name matches exactly. Use `glob:` prefix to expand `*` as a glob, e.g. `--branch 'glob:push-*'`. Other wildcard characters such as `?` are *not* supported.
-
-  Default value: `glob:*`
+   By default, the specified name matches exactly. Use `glob:` prefix to expand `*` as a glob, e.g. `--branch 'glob:push-*'`. Other wildcard characters such as `?` are *not* supported. Can be repeated to specify multiple branches.
 * `--tracked` — Fetch only tracked bookmarks
 
-   This fetches only bookmarks that are already tracked from the specified remote(s).
+   This fetches only bookmarks that are already tracked from the specified remote(s). Can be combined with --branch to fetch only tracked bookmarks matching the specified patterns.
 * `--remote <REMOTE>` — The remote to fetch from (only named remotes are supported, can be repeated)
 
    This defaults to the `git.fetch` setting. If that is not configured, and if there are multiple remotes, the remote named "origin" will be used.
